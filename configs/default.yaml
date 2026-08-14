@@ -1,0 +1,68 @@
+# configs/default.yaml
+# The single source of truth for all hyperparameters.
+# Override specific values in a separate YAML and pass both to load_config().
+
+model:
+  # Vocabulary size — set after BPE tokenizer is trained (PR 009)
+  # 5000 is our target; adjust if BPE converges to a different size
+  vocab_size: 5000
+
+  # Maximum number of tokens the model processes in one forward pass.
+  # 256 fits comfortably in T4 VRAM at batch_size=64. See MASTER.md §4.
+  context_length: 256
+
+  # Number of transformer blocks stacked (depth of the network)
+  n_layer: 6
+
+  # Number of parallel attention heads per block
+  # Must divide n_embd evenly: 384 / 6 = 64 (d_head)
+  n_head: 6
+
+  # Embedding dimension — the "width" of the model
+  n_embd: 384
+
+  # Dropout probability applied in attention and FFN
+  dropout: 0.1
+
+  # Whether to use bias in Linear layers and LayerNorm
+  # GPT-2 uses bias=True; modern models (LLaMA) omit bias. We omit it.
+  bias: false
+
+train:
+  # ── Data ──────────────────────────────────────────────────────────
+  data_path: "data/processed/corpus.bin"
+  train_split: 0.9
+
+  # ── Batching ──────────────────────────────────────────────────────
+  # Micro-batch size (sequences per GPU step)
+  batch_size: 64
+
+  # Effective batch = batch_size × grad_accum_steps = 64 × 8 = 512
+  # See MASTER.md §5.6 (Gradient Accumulation)
+  grad_accum_steps: 8
+
+  # ── Schedule ──────────────────────────────────────────────────────
+  max_steps: 5000
+  warmup_steps: 100       # Linear warmup before cosine decay starts
+
+  # ── Optimiser (AdamW) ─────────────────────────────────────────────
+  learning_rate: 3.0e-4   # Peak LR; decays to min_lr via cosine
+  min_lr: 3.0e-5          # 10% of peak — never goes below this
+  weight_decay: 0.1
+  beta1: 0.9
+  beta2: 0.95             # Lower than default 0.999 — see MASTER.md §5.3
+  grad_clip: 1.0
+
+  # ── Evaluation & checkpointing ────────────────────────────────────
+  eval_interval: 250      # Validate every N training steps
+  eval_steps: 50          # Number of validation batches to average
+  checkpoint_interval: 500
+  checkpoint_dir: "checkpoints"
+
+  # ── Hardware ──────────────────────────────────────────────────────
+  device: "cuda"          # "cpu" for local testing without GPU
+  dtype: "bfloat16"       # Mixed precision — see MASTER.md §5.5 ADR-012
+
+  # ── Logging ───────────────────────────────────────────────────────
+  log_interval: 10        # Print training loss every N steps
+  log_dir: "logs"
