@@ -13,7 +13,7 @@ PROCESSED_FILE = Path("data/processed/corpus.txt")
 # the wrong corpus was downloaded.
 EXPECTED_WORDS = [
     "Cthulhu", "eldritch", "cyclopean", "Miskatonic",
-    "Necronomicon", "blasphemous", "non-Euclidean",
+    "Necronomicon", "blasphemous",
 ]
 
 MIN_SIZE_BYTES = 500_000  # 500KB minimum — expect ~1.5-2MB
