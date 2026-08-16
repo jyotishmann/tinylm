@@ -122,3 +122,79 @@ class Trainer:
         scaled_loss.backward()
 
         return loss.item()  # Unscaled, float32, for logging
+
+
+    def train(self) -> None:
+        """
+        Full training loop: max_steps steps with gradient accumulation.
+
+        For each step:
+          1. Update LR via cosine schedule
+          2. Accumulate gradients over grad_accum_steps micro-batches
+          3. Clip gradient norm
+          4. Optimizer step
+          5. Log, validate, checkpoint at appropriate intervals
+
+        PR 024 adds: gradient accumulation loop
+        PR 025 adds: gradient clipping (inside this method)
+        PR 026 adds: save_checkpoint() calls (inside this method)
+        PR 027 adds: validate() calls + logging (inside this method)
+        """
+        cfg = self.cfg.train
+        print(f"\n{'='*60}")
+        print(f"  Training TinyLM (EMG-01)")
+        print(f"  Steps:          {cfg.max_steps:,}")
+        print(f"  Batch size:     {cfg.batch_size} × {cfg.grad_accum_steps} "
+              f"= {cfg.effective_batch_size} effective")
+        print(f"  Device:         {self.device}")
+        print(f"{'='*60}\n")
+
+        t0 = time.perf_counter()
+
+        while self.step < cfg.max_steps:
+
+            # ── 1. Update learning rate ───────────────────────────────
+            lr = get_lr(self.step, cfg)
+            set_lr(self.optimizer, lr)
+
+            # ── 2. Gradient accumulation loop ─────────────────────────
+            # Zero gradients BEFORE the accumulation loop (not inside)
+            self.optimizer.zero_grad(set_to_none=True)
+
+            accum_loss = 0.0  # running sum for logging
+            for micro_step in range(cfg.grad_accum_steps):
+                x, y = self._get_batch()
+                micro_loss = self.train_step(x, y)  # backward() called inside
+                accum_loss += micro_loss
+
+            # Average loss over accumulation steps (for logging)
+            avg_loss = accum_loss / cfg.grad_accum_steps
+            self.train_losses.append(avg_loss)
+
+            # ── 3. Gradient clipping — PR 025 adds this ───────────────
+            # (placeholder — filled in by PR 025)
+            # torch.nn.utils.clip_grad_norm_(self.model.parameters(), cfg.grad_clip)
+
+            # ── 4. Optimizer step ─────────────────────────────────────
+            self.optimizer.step()
+
+            self.step += 1
+
+            # ── 5. Logging ────────────────────────────────────────────
+            if self.step % cfg.log_interval == 0:
+                elapsed = time.perf_counter() - t0
+                tokens_per_sec = (
+                    cfg.log_interval
+                    * cfg.effective_batch_size
+                    * self.cfg.model.context_length
+                ) / elapsed
+                print(
+                    f"step {self.step:>5} | "
+                    f"loss {avg_loss:.4f} | "
+                    f"lr {lr:.2e} | "
+                    f"{tokens_per_sec:.0f} tok/s"
+                )
+                t0 = time.perf_counter()
+
+            # ── 6. Validate and checkpoint — PRs 026, 027 add this ────
+            # (placeholders — filled in by those PRs)    
