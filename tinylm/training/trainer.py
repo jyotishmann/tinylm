@@ -88,29 +88,37 @@ class Trainer:
 
     def train_step(self, x: torch.Tensor, y: torch.Tensor) -> float:
         """
-        One forward + backward pass on a single micro-batch.
+        One forward + backward pass with mixed precision (bfloat16).
 
-        Does NOT call optimizer.step() — that happens in the outer loop
-        after gradient accumulation is complete.
+        torch.autocast wraps only the forward pass — the backward pass
+        computes gradients in float32 automatically.
 
         Args:
             x: Input token IDs, shape (B, T)
             y: Target token IDs, shape (B, T)
 
         Returns:
-            Raw (unscaled) loss value for this micro-batch
+            Raw loss value (float32 scalar) for this micro-batch
         """
         self.model.train()
 
-        # Forward pass
-        # PR 023 will wrap this in torch.autocast for mixed precision
-        _, loss = self.model(x, y)
+        # ── Mixed precision forward pass ──────────────────────────────
+        # autocast context:
+        #   - MatMuls, attention ops → bfloat16  (fast, low memory)
+        #   - Softmax, LayerNorm, loss → float32  (precision-sensitive)
+        # device_type must match the model's device ('cuda' or 'cpu')
+        # On CPU, bfloat16 is supported from PyTorch 1.10+
+        device_type = "cuda" if self.device.type == "cuda" else "cpu"
 
-        # Scale loss for gradient accumulation (PR 024 adds this)
-        # Here: grad_accum_steps = 1 effectively
-        scaled_loss = loss / self.cfg.train.grad_accum_steps
+        with torch.autocast(device_type=device_type, dtype=torch.bfloat16,
+                            enabled=(device_type == "cuda")):
+            _, loss = self.model(x, y)
+            # Scale loss before backward so accumulated gradients equal
+            # the mean over grad_accum_steps batches (not the sum)
+            scaled_loss = loss / self.cfg.train.grad_accum_steps
 
-        # Backward pass: accumulate gradients
+        # ── Backward pass (runs in float32 automatically) ─────────────
+        # autograd casts gradients back to float32 when autocast is off
         scaled_loss.backward()
 
-        return loss.item()  # Return the UNSCALED loss for logging
+        return loss.item()  # Unscaled, float32, for logging

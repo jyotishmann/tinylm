@@ -6,9 +6,9 @@
 # The PyTorch scheduler doesn't support custom warmup natively.
 # Our pure function is 8 lines and completely transparent.
 
-import torch
 from __future__ import annotations
 import math
+import torch
 
 from tinylm.config import TrainConfig
 
