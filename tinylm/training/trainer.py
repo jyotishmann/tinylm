@@ -172,8 +172,14 @@ class Trainer:
             self.train_losses.append(avg_loss)
 
             # ── 3. Gradient clipping — PR 025 adds this ───────────────
-            # (placeholder — filled in by PR 025)
-            # torch.nn.utils.clip_grad_norm_(self.model.parameters(), cfg.grad_clip)
+            # Clips after all grad_accum_steps micro-batches are done
+            # Returns the pre-clip global norm (useful for monitoring)
+            grad_norm = torch.nn.utils.clip_grad_norm_(
+                self.model.parameters(),
+                max_norm = cfg.grad_clip,   # 1.0 from config
+            )
+            # grad_norm > 1.0 means clipping fired on this step
+            # Monitor via: if grad_norm > cfg.grad_clip: log_clip_event()
 
             # ── 4. Optimizer step ─────────────────────────────────────
             self.optimizer.step()
@@ -188,10 +194,12 @@ class Trainer:
                     * cfg.effective_batch_size
                     * self.cfg.model.context_length
                 ) / elapsed
+                clipped = "🔴" if grad_norm > cfg.grad_clip else "  "
                 print(
                     f"step {self.step:>5} | "
                     f"loss {avg_loss:.4f} | "
                     f"lr {lr:.2e} | "
+                    f"‖g‖ {grad_norm:.2f}{clipped} | "
                     f"{tokens_per_sec:.0f} tok/s"
                 )
                 t0 = time.perf_counter()
