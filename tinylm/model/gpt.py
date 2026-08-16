@@ -158,3 +158,106 @@ class GPT(nn.Module):
     def from_config(cls, cfg: ModelConfig) -> "GPT":
         """Convenience constructor. Identical to GPT(cfg) but explicit."""
         return cls(cfg)
+
+
+    @torch.no_grad()
+    def generate(
+        self,
+        idx:            torch.Tensor,           # (B, T) prompt token IDs
+        max_new_tokens: int   = 200,
+        temperature:    float = 0.8,
+        top_k:          int   = 50,
+        top_p:          float = 0.9,
+        eos_id:         Optional[int] = None,   # stop early if this token sampled
+    ) -> torch.Tensor:
+        """
+        Autoregressive text generation with temperature + top-k + nucleus sampling.
+
+        At each step:
+          1. Trim context to context_length (sliding window if too long)
+          2. Forward pass to get logits for the last position
+          3. Apply temperature scaling
+          4. Apply top-k filtering
+          5. Softmax → probabilities
+          6. Apply top-p (nucleus) filtering
+          7. Sample one token
+          8. Append to sequence and repeat
+
+        Args:
+            idx:            Prompt as token ID tensor, shape (B, T_prompt)
+            max_new_tokens: Maximum tokens to generate after the prompt
+            temperature:    Logit scaling. 0 = greedy; ~0.8 = default; >1 = random
+            top_k:          Keep only top k tokens. 0 = disabled.
+            top_p:          Nucleus probability mass. 1.0 = disabled.
+            eos_id:         If provided, stop generation when this ID is sampled.
+
+        Returns:
+            Full sequence (prompt + generated), shape (B, T_prompt + generated)
+
+        Note: decorated with @torch.no_grad() — no gradients needed for inference.
+        """
+        self.eval()
+
+        for _ in range(max_new_tokens):
+            # ── Trim to context window ────────────────────────────────
+            # Sliding window: always take the last context_length tokens
+            idx_cond = idx[:, -self.cfg.context_length:]
+
+            # ── Forward pass — last position only ─────────────────────
+            logits, _ = self(idx_cond)
+            # logits: (B, T_cond, vocab_size)
+            # We only need the last position's logits
+            logits = logits[:, -1, :]  # (B, vocab_size)
+
+            # ── Temperature ───────────────────────────────────────────
+            # temperature == 0 → greedy (sample the argmax directly)
+            if temperature == 0:
+                next_token = logits.argmax(dim=-1, keepdim=True)  # (B, 1)
+                idx = torch.cat([idx, next_token], dim=1)
+                if eos_id is not None and (next_token == eos_id).any():
+                    break
+                continue
+
+            logits = logits / temperature
+
+            # ── Top-k filtering ───────────────────────────────────────
+            # Zero out all logits except the k largest
+            if top_k > 0:
+                k = min(top_k, logits.size(-1))
+                # topk returns (values, indices) — we need values for threshold
+                top_k_values = torch.topk(logits, k).values
+                # threshold: the k-th largest value (per batch item)
+                threshold = top_k_values[:, -1].unsqueeze(-1)  # (B, 1)
+                # Set all logits below threshold to -inf
+                logits = logits.masked_fill(logits < threshold, float("-inf"))
+
+            # ── Softmax → probabilities ───────────────────────────────
+            probs = F.softmax(logits, dim=-1)  # (B, vocab_size)
+
+            # ── Top-p (nucleus) filtering ─────────────────────────────
+            if top_p < 1.0:
+                # Sort probabilities in descending order
+                sorted_probs, sorted_idx = torch.sort(probs, descending=True)
+                # Cumulative sum along vocabulary dimension
+                cumsum = torch.cumsum(sorted_probs, dim=-1)
+
+                # Mask tokens beyond the nucleus (cumsum > top_p, shifted by 1
+                # so we always keep at least one token even if p > top_p)
+                remove_mask = (cumsum - sorted_probs) > top_p
+                sorted_probs[remove_mask] = 0.0
+
+                # Renormalise: nucleus probabilities must sum to 1
+                sorted_probs = sorted_probs / sorted_probs.sum(dim=-1, keepdim=True)
+
+                # Scatter back to original vocabulary order
+                probs = torch.zeros_like(probs).scatter_(1, sorted_idx, sorted_probs)
+
+            # ── Sample ────────────────────────────────────────────────
+            next_token = torch.multinomial(probs, num_samples=1)  # (B, 1)
+
+            # ── Append and check EOS ──────────────────────────────────
+            idx = torch.cat([idx, next_token], dim=1)
+            if eos_id is not None and (next_token == eos_id).any():
+                break
+
+        return idx
