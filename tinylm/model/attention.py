@@ -90,3 +90,111 @@ def scaled_dot_product_attention(
 # We implement ours manually because (a) this is a from-scratch project,
 # and (b) we need to return attn_weights for the visualisation endpoint.
 # Flash Attention does not expose intermediate attention weights.
+
+# Append to tinylm/model/attention.py
+
+class MultiHeadAttention(nn.Module):
+    """
+    Multi-head self-attention with causal mask.
+
+    Projects input into Q, K, V using a single fused linear layer,
+    splits into n_head heads, applies SDPA in parallel, concatenates,
+    and projects back to n_embd.
+
+    Also applies:
+      - Attention dropout (inside SDPA)
+      - Residual dropout (after output projection)
+
+    The causal mask is pre-computed once and stored as a buffer.
+    It does not move to GPU manually — register_buffer handles it.
+
+    Args:
+        cfg: ModelConfig with n_embd, n_head, context_length, dropout, bias
+    """
+
+    def __init__(self, cfg: ModelConfig) -> None:
+        super().__init__()
+
+        assert cfg.n_embd % cfg.n_head == 0, (
+            f"n_embd ({cfg.n_embd}) must be divisible by n_head ({cfg.n_head})"
+        )
+
+        self.n_head  = cfg.n_head
+        self.n_embd  = cfg.n_embd
+        self.d_head  = cfg.n_embd // cfg.n_head  # e.g. 384 // 6 = 64
+        self.dropout = cfg.dropout
+
+        # Fused QKV projection: one matrix for all three
+        # Output dim = 3 * n_embd so we can split into Q, K, V after
+        self.c_attn = nn.Linear(cfg.n_embd, 3 * cfg.n_embd, bias=cfg.bias)
+
+        # Output projection: reassembles concatenated heads → n_embd
+        self.c_proj = nn.Linear(cfg.n_embd, cfg.n_embd, bias=cfg.bias)
+
+        # Dropout layers
+        self.attn_drop  = nn.Dropout(cfg.dropout)  # on attention weights
+        self.resid_drop = nn.Dropout(cfg.dropout)  # on output projection
+
+        # Causal mask: lower triangular — position i can only attend to j ≤ i
+        # Shape (1, 1, T, T) so it broadcasts over batch and head dimensions
+        # register_buffer: not a parameter (no gradient), but moves with the model
+        self.register_buffer(
+            "causal_mask",
+            torch.tril(
+                torch.ones(cfg.context_length, cfg.context_length)
+            ).view(1, 1, cfg.context_length, cfg.context_length),
+        )
+
+    def forward(
+        self,
+        x: torch.Tensor,                       # (B, T, C)
+        return_weights: bool = False,
+    ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
+        """
+        Args:
+            x:              Input tensor of shape (B, T, n_embd)
+            return_weights: If True, return (output, attn_weights).
+                            Used by the attention visualisation API.
+
+        Returns:
+            output: Shape (B, T, n_embd)
+            attn_weights (optional): Shape (B, n_head, T, T)
+        """
+        B, T, C = x.shape
+
+        # ── 1. Fused QKV projection ───────────────────────────────────
+        # (B, T, C) → (B, T, 3C), then split into 3 × (B, T, C)
+        qkv = self.c_attn(x)
+        q, k, v = qkv.split(self.n_embd, dim=2)
+
+        # ── 2. Reshape into heads ─────────────────────────────────────
+        # (B, T, C) → (B, T, H, d_head) → (B, H, T, d_head)
+        # The transpose brings the head dimension before the sequence dimension
+        # so SDPA sees independent (T, d_head) matrices per head
+        def split_heads(t):
+            return t.view(B, T, self.n_head, self.d_head).transpose(1, 2)
+
+        q, k, v = split_heads(q), split_heads(k), split_heads(v)
+        # Now each is (B, H, T, d_head)
+
+        # ── 3. Scaled dot-product attention ───────────────────────────
+        out, attn_weights = scaled_dot_product_attention(
+            q, k, v,
+            mask     = self.causal_mask,
+            dropout  = self.dropout,
+            training = self.training,
+        )
+        # out: (B, H, T, d_head), attn_weights: (B, H, T, T)
+
+        # ── 4. Reassemble heads ───────────────────────────────────────
+        # (B, H, T, d_head) → (B, T, H, d_head) → (B, T, C)
+        # .contiguous() required before .view() because .transpose() creates
+        # a non-contiguous view — view() requires contiguous memory layout
+        out = out.transpose(1, 2).contiguous().view(B, T, C)
+
+        # ── 5. Output projection + residual dropout ───────────────────
+        out = self.resid_drop(self.c_proj(out))
+
+        if return_weights:
+            return out, attn_weights
+        return out
