@@ -322,3 +322,81 @@ class BPETokenizer:
     def token_count(self, text: str) -> int:
         """How many tokens does this text encode to? Useful for length checks."""
         return len(self.encode(text))
+
+
+    def save(self, path: str | Path) -> None:
+        """
+        Serialise the trained tokenizer to a JSON file.
+
+        The saved file contains everything needed to reconstruct the
+        tokenizer exactly: merge rules (in training order) and the
+        full vocabulary mapping.
+
+        Args:
+            path: File path to save to (e.g. "checkpoints/tokenizer.json")
+        """
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+        data = {
+            "version":     "1.0",
+            # merges is a list of [a, b] pairs (JSON doesn't have tuples)
+            "merges":      [list(pair) for pair in self.merges],
+            "token_to_id": self.token_to_id,
+            "metadata": {
+                "vocab_size":    self.vocab_size,
+                "n_merges":      len(self.merges),
+                "end_of_word":   END_OF_WORD,
+                "special_tokens": SPECIAL_TOKENS,
+            },
+        }
+
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+
+        print(f"✓ Tokenizer saved to {path}")
+        print(f"  Vocabulary size : {self.vocab_size:,}")
+        print(f"  Merge rules     : {len(self.merges):,}")
+        print(f"  File size       : {path.stat().st_size / 1024:.1f} KB")
+
+    @classmethod
+    def load(cls, path: str | Path) -> "BPETokenizer":
+        """
+        Load a tokenizer from a saved JSON file.
+
+        Args:
+            path: Path to a tokenizer.json file saved by save()
+
+        Returns:
+            A fully initialised BPETokenizer ready for encode/decode
+
+        Raises:
+            FileNotFoundError: if path does not exist
+            ValueError: if the JSON format is unrecognised
+        """
+        path = Path(path)
+        if not path.exists():
+            raise FileNotFoundError(
+                f"Tokenizer file not found: {path}\n"
+                "Run: python -m tinylm.tokenizer.train"
+            )
+
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        if data.get("version") != "1.0":
+            raise ValueError(
+                f"Unrecognised tokenizer version: {data.get('version')}. "
+                f"Expected '1.0'."
+            )
+
+        tok = cls()
+        tok.merges      = [tuple(pair) for pair in data["merges"]]
+        tok.token_to_id = data["token_to_id"]
+        tok.id_to_token = {int(k): v for k, v in
+                          {v: k for k, v in tok.token_to_id.items()}.items()}
+        # Build integer keys properly from the inverse dict
+        tok.id_to_token = {v: k for k, v in tok.token_to_id.items()}
+        tok._merge_rank = None  # Will be built lazily on first encode()
+
+        return tok
