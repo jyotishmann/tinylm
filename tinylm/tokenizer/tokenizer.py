@@ -153,3 +153,172 @@ class BPETokenizer:
             print(f"\n✓ Training complete.")
             print(f"  Final vocab size: {self.vocab_size:,}")
             print(f"  Merge rules learned: {len(self.merges):,}")
+
+    def _build_merge_rank(self) -> None:
+        """
+        Build (or rebuild) the merge-rank lookup cache.
+
+        Maps each merge pair to its index in self.merges.
+        Lower rank = learned earlier = applied first during encoding.
+
+        Called lazily on first encode() call.
+        Must be invalidated (set to None) whenever self.merges changes.
+        """
+        self._merge_rank = {
+            pair: rank for rank, pair in enumerate(self.merges)
+        }
+        
+
+    def _encode_word(self, word: str) -> list[int]:
+        """
+        Encode a single pre-token (word) to a list of token IDs.
+
+        Algorithm:
+          1. Convert word to character list + END_OF_WORD marker
+          2. Scan for the lowest-rank applicable merge pair
+          3. Apply that merge
+          4. Repeat until no applicable pairs remain
+          5. Map each resulting symbol to its vocabulary ID
+
+        Args:
+            word: A single pre-token string (e.g. "eldritch")
+
+        Returns:
+            List of integer token IDs
+
+        Handles OOV characters: if a character is not in the vocabulary
+        (shouldn't happen with BPE but we guard anyway), substitute UNK.
+        """
+        if self._merge_rank is None:
+            self._build_merge_rank()
+
+        # Initialise as character sequence + end-of-word
+        symbols: list[str] = list(word) + [END_OF_WORD]
+
+        # Iteratively apply the lowest-rank merge that applies
+        while len(symbols) > 1:
+            # Find the adjacent pair with the lowest merge rank
+            best_idx  = -1
+            best_rank = float("inf")
+
+            for i in range(len(symbols) - 1):
+                pair = (symbols[i], symbols[i + 1])
+                rank = self._merge_rank.get(pair, float("inf"))
+                if rank < best_rank:
+                    best_rank = rank
+                    best_idx  = i
+
+            if best_rank == float("inf"):
+                break  # No applicable merge rules remain
+
+            # Apply the merge at best_idx
+            merged = symbols[best_idx] + symbols[best_idx + 1]
+            symbols = (
+                symbols[:best_idx]
+                + [merged]
+                + symbols[best_idx + 2:]
+            )
+
+        # Convert symbols to IDs, using UNK for any unseen token
+        return [
+            self.token_to_id.get(sym, self.unk_id)
+            for sym in symbols
+        ]
+
+    def encode(
+        self,
+        text:    str,
+        add_bos: bool = False,
+        add_eos: bool = False,
+    ) -> list[int]:
+        """
+        Encode a text string to a list of integer token IDs.
+
+        Steps:
+          1. Pre-tokenise text into words + punctuation
+          2. Encode each pre-token via _encode_word()
+          3. Flatten the results into a single ID sequence
+          4. Optionally prepend BOS and/or append EOS
+
+        Args:
+            text:    Input string to encode.
+            add_bos: Prepend BOS token ID (for generation prompts).
+            add_eos: Append EOS token ID (for training sequences).
+
+        Returns:
+            List of integer token IDs.
+
+        Example:
+            tok.encode("The eldritch horror")
+            → [412, 88, 1023]  (IDs vary with vocabulary)
+
+            tok.encode("The", add_bos=True, add_eos=True)
+            → [2, 412, 3]  (BOS=2, "The"=412, EOS=3)
+        """
+        ids: list[int] = []
+
+        if add_bos:
+            ids.append(self.bos_id)
+
+        for word in pretokenize(text):
+            ids.extend(self._encode_word(word))
+
+        if add_eos:
+            ids.append(self.eos_id)
+
+        return ids
+
+
+    def decode(
+        self,
+        ids:            list[int],
+        skip_special:   bool = True,
+    ) -> str:
+        """
+        Decode a list of token IDs back to a text string.
+
+        Args:
+            ids:          List of integer token IDs.
+            skip_special: If True, skip BOS/EOS/PAD tokens (default).
+                          Set False to see them as strings (for debugging).
+
+        Returns:
+            Decoded text string.
+
+        Example:
+            tok.decode([412, 88, 1023])
+            → "The eldritch horror"
+
+        Note on END_OF_WORD:
+            Token strings contain '</w>' at word boundaries.
+            "the</w> eldritch</w> horror</w>" → "the eldritch horror"
+            We replace '</w>' with ' ' then strip the trailing space.
+        """
+        # Filter special token IDs if requested
+        if skip_special:
+            special_id_set = set(SPECIAL_TOKENS.values())
+            ids = [i for i in ids if i not in special_id_set]
+
+        # ID → token string, falling back to <UNK> for unknown IDs
+        tokens = [
+            self.id_to_token.get(i, "<UNK>")
+            for i in ids
+        ]
+
+        # Concatenate all tokens and restore word boundaries
+        text = "".join(tokens)
+        text = text.replace(END_OF_WORD, " ")
+        return text.strip()
+
+    def encode_batch(
+        self,
+        texts:   list[str],
+        add_bos: bool = False,
+        add_eos: bool = False,
+    ) -> list[list[int]]:
+        """Encode a list of strings. Returns list of ID lists (variable length)."""
+        return [self.encode(t, add_bos=add_bos, add_eos=add_eos) for t in texts]
+
+    def token_count(self, text: str) -> int:
+        """How many tokens does this text encode to? Useful for length checks."""
+        return len(self.encode(text))
