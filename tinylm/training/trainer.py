@@ -206,3 +206,92 @@ class Trainer:
 
             # ── 6. Validate and checkpoint — PRs 026, 027 add this ────
             # (placeholders — filled in by those PRs)    
+
+    def save_checkpoint(self, tag: str = "latest") -> Path:
+        """
+        Save training state to checkpoints/<tag>.pt.
+
+        Args:
+            tag: Identifier ('latest', 'best_model', 'step_05000', etc.)
+
+        Returns:
+            Path to the saved checkpoint file
+        """
+        path = self.ckpt_dir / f"{tag}.pt"
+
+        checkpoint = {
+            # Training position
+            "step":           self.step,
+            "best_val_loss":  self.best_val_loss,
+
+            # Model and optimizer state
+            "model_state_dict":     self.model.state_dict(),
+            "optimizer_state_dict": self.optimizer.state_dict(),
+
+            # Loss history (for plotting)
+            "train_losses": self.train_losses,
+            "val_losses":   self.val_losses,
+
+            # Config snapshot (for verification on load)
+            "model_cfg": {
+                "n_layer":        self.cfg.model.n_layer,
+                "n_head":         self.cfg.model.n_head,
+                "n_embd":         self.cfg.model.n_embd,
+                "vocab_size":     self.cfg.model.vocab_size,
+                "context_length": self.cfg.model.context_length,
+            },
+        }
+
+        torch.save(checkpoint, path)
+
+        size_mb = path.stat().st_size / 1024 / 1024
+        print(f"  ✓ Checkpoint saved: {path.name}  ({size_mb:.1f} MB)")
+        return path
+
+    def load_checkpoint(self, path: str | Path) -> None:
+        """
+        Restore training state from a checkpoint file.
+
+        Restores: step, val loss, model weights, optimizer moments,
+                  and loss history for plotting continuity.
+
+        Args:
+            path: Path to a .pt checkpoint file
+
+        Raises:
+            FileNotFoundError: if path doesn't exist
+            RuntimeError: if checkpoint config doesn't match current config
+        """
+        path = Path(path)
+        if not path.exists():
+            raise FileNotFoundError(f"Checkpoint not found: {path}")
+
+        print(f"Loading checkpoint: {path}")
+        checkpoint = torch.load(path, map_location=self.device)
+
+        # Config verification: ensure checkpoint matches current architecture
+        saved_cfg = checkpoint.get("model_cfg", {})
+        for key in ("n_layer", "n_head", "n_embd", "vocab_size"):
+            saved_val   = saved_cfg.get(key)
+            current_val = getattr(self.cfg.model, key)
+            if saved_val is not None and saved_val != current_val:
+                raise RuntimeError(
+                    f"Checkpoint mismatch on '{key}': "
+                    f"saved={saved_val}, current={current_val}. "
+                    f"Use the same configs/default.yaml as when training started."
+                )
+
+        # Restore model weights
+        self.model.load_state_dict(checkpoint["model_state_dict"])
+
+        # Restore optimizer moments (essential for seamless resume)
+        self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+
+        # Restore training position
+        self.step          = checkpoint["step"]
+        self.best_val_loss = checkpoint["best_val_loss"]
+        self.train_losses  = checkpoint.get("train_losses", [])
+        self.val_losses    = checkpoint.get("val_losses",   [])
+
+        print(f"  ✓ Resumed from step {self.step} | "
+              f"best_val_loss = {self.best_val_loss:.4f}")
