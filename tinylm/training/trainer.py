@@ -126,86 +126,114 @@ class Trainer:
 
     def train(self) -> None:
         """
-        Full training loop: max_steps steps with gradient accumulation.
+        Complete training loop: all features assembled.
 
-        For each step:
-          1. Update LR via cosine schedule
-          2. Accumulate gradients over grad_accum_steps micro-batches
-          3. Clip gradient norm
-          4. Optimizer step
-          5. Log, validate, checkpoint at appropriate intervals
-
-        PR 024 adds: gradient accumulation loop
-        PR 025 adds: gradient clipping (inside this method)
-        PR 026 adds: save_checkpoint() calls (inside this method)
-        PR 027 adds: validate() calls + logging (inside this method)
+        Features (one per PR):
+          PR 022: forward → backward → optimizer step
+          PR 023: torch.autocast(bfloat16) in train_step
+          PR 024: grad_accum_steps micro-batches per outer step
+          PR 025: clip_grad_norm_ before optimizer.step()
+          PR 026: save_checkpoint() on best val loss + periodic
+          PR 027: validate() every eval_interval steps + CSV logging
         """
+        import math
+
         cfg = self.cfg.train
+        log_path = Path(self.cfg.train.log_dir) / "train_log.csv"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Write CSV header (append mode so resume doesn't overwrite)
+        if not log_path.exists():
+            log_path.write_text("step,lr,train_loss,val_loss,perplexity,grad_norm\n")
+
         print(f"\n{'='*60}")
-        print(f"  Training TinyLM (EMG-01)")
-        print(f"  Steps:          {cfg.max_steps:,}")
-        print(f"  Batch size:     {cfg.batch_size} × {cfg.grad_accum_steps} "
-              f"= {cfg.effective_batch_size} effective")
-        print(f"  Device:         {self.device}")
+        print(f"  TinyLM (EMG-01) — Training")
+        print(f"  Steps:    {cfg.max_steps:,}  (resume from step {self.step})")
+        print(f"  Eff. batch: {cfg.effective_batch_size:,} tokens per step")
+        print(f"  Device:   {self.device}")
+        print(f"  Log:      {log_path}")
         print(f"{'='*60}\n")
 
         t0 = time.perf_counter()
 
         while self.step < cfg.max_steps:
 
-            # ── 1. Update learning rate ───────────────────────────────
+            # ── 1. LR schedule ────────────────────────────────────────
             lr = get_lr(self.step, cfg)
             set_lr(self.optimizer, lr)
 
-            # ── 2. Gradient accumulation loop ─────────────────────────
-            # Zero gradients BEFORE the accumulation loop (not inside)
+            # ── 2. Gradient accumulation ──────────────────────────────
             self.optimizer.zero_grad(set_to_none=True)
+            accum_loss = 0.0
 
-            accum_loss = 0.0  # running sum for logging
-            for micro_step in range(cfg.grad_accum_steps):
+            for _ in range(cfg.grad_accum_steps):
                 x, y = self._get_batch()
-                micro_loss = self.train_step(x, y)  # backward() called inside
-                accum_loss += micro_loss
+                accum_loss += self.train_step(x, y)
 
-            # Average loss over accumulation steps (for logging)
             avg_loss = accum_loss / cfg.grad_accum_steps
             self.train_losses.append(avg_loss)
 
-            # ── 3. Gradient clipping — PR 025 adds this ───────────────
-            # Clips after all grad_accum_steps micro-batches are done
-            # Returns the pre-clip global norm (useful for monitoring)
+            # ── 3. Gradient clipping ──────────────────────────────────
             grad_norm = torch.nn.utils.clip_grad_norm_(
-                self.model.parameters(),
-                max_norm = cfg.grad_clip,   # 1.0 from config
+                self.model.parameters(), max_norm=cfg.grad_clip
             )
-            # grad_norm > 1.0 means clipping fired on this step
-            # Monitor via: if grad_norm > cfg.grad_clip: log_clip_event()
 
             # ── 4. Optimizer step ─────────────────────────────────────
             self.optimizer.step()
-
             self.step += 1
 
-            # ── 5. Logging ────────────────────────────────────────────
+            # ── 5. Console logging ────────────────────────────────────
             if self.step % cfg.log_interval == 0:
-                elapsed = time.perf_counter() - t0
+                elapsed       = time.perf_counter() - t0
                 tokens_per_sec = (
-                    cfg.log_interval
-                    * cfg.effective_batch_size
+                    cfg.log_interval * cfg.effective_batch_size
                     * self.cfg.model.context_length
                 ) / elapsed
-                clipped = "🔴" if grad_norm > cfg.grad_clip else "  "
+                clip_flag = "🔴" if grad_norm > cfg.grad_clip else "  "
                 print(
-                    f"step {self.step:>5} | "
+                    f"step {self.step:>5}/{cfg.max_steps} | "
                     f"loss {avg_loss:.4f} | "
-                    f"lr {lr:.2e} | "
-                    f"‖g‖ {grad_norm:.2f}{clipped} | "
+                    f"lr {lr:.1e} | "
+                    f"‖g‖ {float(grad_norm):.3f}{clip_flag} | "
                     f"{tokens_per_sec:.0f} tok/s"
                 )
                 t0 = time.perf_counter()
 
-            # ── 6. Validate and checkpoint — PRs 026, 027 add this ────
-            # (placeholders — filled in by those PRs)    
+            # ── 6. Validation + checkpoint ────────────────────────────
+            if self.step % cfg.eval_interval == 0 or self.step == cfg.max_steps:
+                val_loss   = self.validate()
+                perplexity = math.exp(min(val_loss, 20))  # cap at e^20 to avoid overflow
+                self.val_losses.append(val_loss)
+
+                print(f"  ── val  step {self.step:>5} | "
+                      f"val_loss {val_loss:.4f} | "
+                      f"ppl {perplexity:.2f} ──")
+
+                # Append to CSV log
+                with open(log_path, "a") as f:
+                    f.write(f"{self.step},{lr:.6e},{avg_loss:.6f},"
+                            f"{val_loss:.6f},{perplexity:.4f},{float(grad_norm):.4f}\n")
+
+                # Save best checkpoint
+                if val_loss < self.best_val_loss:
+                    self.best_val_loss = val_loss
+                    self.save_checkpoint("best_model")
+                    print(f"  ★ New best val_loss: {val_loss:.4f}")
+
+                # Always save latest
+                self.save_checkpoint("latest")
+
+            # Periodic named snapshot
+            if self.step % cfg.checkpoint_interval == 0:
+                self.save_checkpoint(f"step_{self.step:05d}")
+
+        print(f"\n{'='*60}")
+        print(f"  Training complete!")
+        print(f"  Best val loss:  {self.best_val_loss:.4f}")
+        print(f"  Best model:     checkpoints/best_model.pt")
+        print(f"  Log:            {log_path}")
+        print(f"{'='*60}")
+
 
     def save_checkpoint(self, tag: str = "latest") -> Path:
         """
@@ -295,3 +323,40 @@ class Trainer:
 
         print(f"  ✓ Resumed from step {self.step} | "
               f"best_val_loss = {self.best_val_loss:.4f}")
+
+
+    @torch.no_grad()
+    def validate(self) -> float:
+        """
+        Compute mean validation loss over cfg.eval_steps batches.
+
+        Returns:
+            Average cross-entropy loss on the validation set (float)
+        """
+        self.model.eval()  # Disable dropout, use running statistics
+
+        cfg = self.cfg.train
+        total_loss = 0.0
+        n_batches  = 0
+
+        val_iter = iter(self.val_loader)
+        for _ in range(min(cfg.eval_steps, len(self.val_loader))):
+            try:
+                x, y = next(val_iter)
+            except StopIteration:
+                break
+
+            x, y = x.to(self.device), y.to(self.device)
+
+            # Mixed precision for consistency with training
+            device_type = "cuda" if self.device.type == "cuda" else "cpu"
+            with torch.autocast(device_type=device_type, dtype=torch.bfloat16,
+                                enabled=(device_type == "cuda")):
+                _, loss = self.model(x, y)
+
+            total_loss += loss.item()
+            n_batches  += 1
+
+        self.model.train()  # Restore training mode before returning
+
+        return total_loss / max(n_batches, 1)        
