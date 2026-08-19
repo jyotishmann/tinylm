@@ -22,7 +22,7 @@ model:
   n_embd: 384
 
   # Dropout probability applied in attention and FFN
-  dropout: 0.1
+  dropout: 0.3
 
   # Whether to use bias in Linear layers and LayerNorm
   # GPT-2 uses bias=True; modern models (LLaMA) omit bias. We omit it.
@@ -31,7 +31,7 @@ model:
 train:
   # ── Data ──────────────────────────────────────────────────────────
   data_path: "data/processed/corpus.bin"
-  train_split: 0.9
+  train_split: 0.85
 
   # ── Batching ──────────────────────────────────────────────────────
   # Micro-batch size (sequences per GPU step)
@@ -42,19 +42,19 @@ train:
   grad_accum_steps: 8
 
   # ── Schedule ──────────────────────────────────────────────────────
-  max_steps: 5000
+  max_steps: 1500
   warmup_steps: 100       # Linear warmup before cosine decay starts
 
   # ── Optimiser (AdamW) ─────────────────────────────────────────────
-  learning_rate: 3.0e-4   # Peak LR; decays to min_lr via cosine
+  learning_rate: 2.0e-4   # Peak LR; decays to min_lr via cosine
   min_lr: 3.0e-5          # 10% of peak — never goes below this
-  weight_decay: 0.1
+  weight_decay: 0.2
   beta1: 0.9
   beta2: 0.95             # Lower than default 0.999 — see MASTER.md §5.3
   grad_clip: 1.0
 
   # ── Evaluation & checkpointing ────────────────────────────────────
-  eval_interval: 250      # Validate every N training steps
+  eval_interval: 100      # Validate every N training steps
   eval_steps: 50          # Number of validation batches to average
   checkpoint_interval: 500
   checkpoint_dir: "checkpoints"

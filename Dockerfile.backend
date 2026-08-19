@@ -1,0 +1,58 @@
+# Dockerfile.backend
+# Python FastAPI server — packages the model API.
+# Model weights NOT included (mounted as volume at runtime).
+#
+# Build: docker build -f Dockerfile.backend -t tinylm-backend .
+# Run:   docker run -p 8000:8000 -v ./checkpoints:/app/checkpoints tinylm-backend
+
+FROM python:3.11-slim AS runtime
+
+# System packages needed at runtime only
+# curl: required for HEALTHCHECK
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        curl \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# ── Install Python dependencies ───────────────────────────────────────
+# Copy requirements first to leverage Docker layer cache.
+# This layer only invalidates when requirements.txt changes — not on code edits.
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt \
+    && pip cache purge
+
+# ── Copy source ───────────────────────────────────────────────────────
+COPY setup.py      .
+COPY configs/      configs/
+COPY tinylm/       tinylm/
+COPY api/          api/
+
+# Install package in editable mode (so 'from tinylm.model import GPT' works)
+RUN pip install -e . --no-deps --no-cache-dir
+
+# ── Runtime configuration ─────────────────────────────────────────────
+# Checkpoints are NOT copied — they are mounted at runtime:
+#   docker run -v ./checkpoints:/app/checkpoints tinylm-backend
+# This keeps the image small and allows swapping checkpoint versions.
+
+ENV MODEL_PATH=/app/checkpoints/best_model.pt
+ENV TOKENIZER_PATH=/app/checkpoints/tokenizer.json
+ENV CONFIG_PATH=/app/configs/default.yaml
+ENV FRONTEND_URL=http://localhost:3000
+
+EXPOSE 8000
+
+# ── Health check ──────────────────────────────────────────────────────
+# start_period=90s: model loading takes ~5s; give it time before probing.
+HEALTHCHECK --interval=30s --timeout=10s \
+            --start-period=90s --retries=3 \
+    CMD curl -f http://localhost:8000/health || exit 1
+
+# ── Entrypoint ────────────────────────────────────────────────────────
+CMD ["uvicorn", "api.main:app", \
+     "--host", "0.0.0.0", \
+     "--port", "8000", \
+     "--workers", "1"]
+# workers=1: multiple workers would each load the model independently
+# (multiple copies of ~500MB model in RAM). Use 1 worker + async endpoints.
