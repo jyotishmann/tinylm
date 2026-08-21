@@ -31,7 +31,7 @@ model:
 train:
   # ── Data ──────────────────────────────────────────────────────────
   data_path: "data/processed/corpus.bin"
-  train_split: 0.85
+  train_split: 0.9
 
   # ── Batching ──────────────────────────────────────────────────────
   # Micro-batch size (sequences per GPU step)
@@ -42,7 +42,7 @@ train:
   grad_accum_steps: 8
 
   # ── Schedule ──────────────────────────────────────────────────────
-  max_steps: 1500
+  max_steps: 2000
   warmup_steps: 100       # Linear warmup before cosine decay starts
 
   # ── Optimiser (AdamW) ─────────────────────────────────────────────
@@ -54,7 +54,7 @@ train:
   grad_clip: 1.0
 
   # ── Evaluation & checkpointing ────────────────────────────────────
-  eval_interval: 100      # Validate every N training steps
+  eval_interval: 200      # Validate every N training steps
   eval_steps: 50          # Number of validation batches to average
   checkpoint_interval: 500
   checkpoint_dir: "checkpoints"

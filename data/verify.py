@@ -13,10 +13,11 @@ PROCESSED_FILE = Path("data/processed/corpus.txt")
 # the wrong corpus was downloaded.
 EXPECTED_WORDS = [
     "Cthulhu", "eldritch", "cyclopean", "Miskatonic",
-    "Necronomicon", "blasphemous",
+    "Necronomicon", "blasphemous", "Poe", "Usher",
+    "horror", "darkness", "strange",
 ]
 
-MIN_SIZE_BYTES = 500_000  # 500KB minimum — expect ~1.5-2MB
+MIN_SIZE_BYTES = 3_000_000  # 3MB minimum — expect ~5-7MB
 
 
 def verify_corpus() -> None:
