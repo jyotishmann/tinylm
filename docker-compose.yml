@@ -1,0 +1,68 @@
+# docker-compose.yml
+# Spins up the full TinyLM system: backend API + frontend UI.
+#
+# Quick start:
+#   docker compose up --build
+#
+# Then open http://localhost:3000 in your browser.
+#
+# Prerequisites:
+#   checkpoints/best_model.pt    (from training)
+#   checkpoints/tokenizer.json   (from tokenizer training)
+#
+# To run backend only (e.g. for API testing):
+#   docker compose up backend
+
+services:
+
+  # ── FastAPI model server ───────────────────────────────────────────
+  backend:
+    build:
+      context:    .
+      dockerfile: Dockerfile.backend
+    image: tinylm-backend:latest
+    container_name: tinylm-backend
+
+    ports:
+      - "8000:8000"   # Expose API for direct curl testing
+
+    volumes:
+      # Bind-mount checkpoints as read-only — not baked into image
+      - ./checkpoints:/app/checkpoints:ro
+
+    environment:
+      MODEL_PATH:     /app/checkpoints/best_model.pt
+      TOKENIZER_PATH: /app/checkpoints/tokenizer.json
+      CONFIG_PATH:    /app/configs/default.yaml
+      FRONTEND_URL:   http://localhost:3000   # For CORS whitelist
+
+    healthcheck:
+      test:         ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval:     30s
+      timeout:      10s
+      start_period: 90s   # Allow time for PyTorch model loading
+      retries:      3
+
+    restart: unless-stopped
+
+  # ── React frontend (Nginx) ─────────────────────────────────────────
+  frontend:
+    build:
+      context:    .
+      dockerfile: Dockerfile.frontend
+    image: tinylm-frontend:latest
+    container_name: tinylm-frontend
+
+    ports:
+      - "3000:80"   # Access UI at http://localhost:3000
+
+    depends_on:
+      backend:
+        condition: service_healthy   # Wait for backend /health to pass
+
+    restart: unless-stopped
+
+# Both services share this network
+networks:
+  default:
+    name: tinylm-network

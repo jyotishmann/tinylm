@@ -75,6 +75,66 @@ LOVECRAFT_TEXTS = [
         "url": "https://www.gutenberg.org/cache/epub/73182/pg73182.txt",
         "pg_id": 73182,
     },
+    # ── Edgar Allan Poe ───────────────────────────────────────────────
+    {
+        "title": "The Complete Works of Edgar Allan Poe Vol 1",
+        "url":   "https://www.gutenberg.org/cache/epub/2147/pg2147.txt",
+        "pg_id": 2147,
+    },
+    {
+        "title": "The Complete Works of Edgar Allan Poe Vol 2",
+        "url":   "https://www.gutenberg.org/cache/epub/2148/pg2148.txt",
+        "pg_id": 2148,
+    },
+    {
+        "title": "The Complete Works of Edgar Allan Poe Vol 3",
+        "url":   "https://www.gutenberg.org/cache/epub/2149/pg2149.txt",
+        "pg_id": 2149,
+    },
+
+    # ── Arthur Machen ─────────────────────────────────────────────────
+    {
+        "title": "The Great God Pan",
+        "url":   "https://www.gutenberg.org/cache/epub/389/pg389.txt",
+        "pg_id": 389,
+    },
+    {
+        "title": "The House of Souls",
+        "url":   "https://www.gutenberg.org/cache/epub/25016/pg25016.txt",
+        "pg_id": 25016,
+    },
+    {
+        "title": "The Hill of Dreams",
+        "url":   "https://www.gutenberg.org/cache/epub/13969/pg13969.txt",
+        "pg_id": 13969,
+    },
+    {
+        "title": "The Three Impostors",
+        "url":   "https://www.gutenberg.org/cache/epub/35517/pg35517.txt",
+        "pg_id": 35517,
+    },
+
+    # ── Algernon Blackwood ────────────────────────────────────────────
+    {
+        "title": "The Willows",
+        "url":   "https://www.gutenberg.org/cache/epub/11438/pg11438.txt",
+        "pg_id": 11438,
+    },
+    {
+        "title": "The Wendigo",
+        "url":   "https://www.gutenberg.org/cache/epub/10897/pg10897.txt",
+        "pg_id": 10897,
+    },
+    {
+        "title": "John Silence",
+        "url":   "https://www.gutenberg.org/cache/epub/49222/pg49222.txt",
+        "pg_id": 49222,
+    },
+    {
+        "title": "Incredible Adventures",
+        "url":   "https://www.gutenberg.org/cache/epub/43816/pg43816.txt",
+        "pg_id": 43816,
+    },
 
 ]
 
